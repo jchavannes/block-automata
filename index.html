@@ -36,15 +36,17 @@
     font-size: 12px;
     margin: 0 0 20px;
     text-align: center;
+    line-height: 1.5;
   }
-  form {
+  form, .controls {
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
     justify-content: center;
-    margin-bottom: 16px;
+    align-items: center;
+    margin-bottom: 12px;
     width: 100%;
-    max-width: 720px;
+    max-width: 768px;
   }
   input[type="text"] {
     flex: 1;
@@ -70,13 +72,35 @@
   }
   button:hover { border-color: var(--accent); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #1a1500; font-weight: 600; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button:disabled:hover { border-color: var(--border); }
+  #nav {
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    width: 100%;
+    max-width: 720px;
+    margin-bottom: 12px;
+  }
+  .controls label { font-size: 12px; color: var(--muted); }
   #status {
     min-height: 18px;
     font-size: 12px;
     color: var(--muted);
     margin-bottom: 12px;
+    text-align: center;
   }
   #status.error { color: #f07070; }
+  #viewer {
+    width: 100%;
+    max-width: 768px;
+    height: 540px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  #viewer canvas { display: block; }
   #meta {
     display: grid;
     grid-template-columns: max-content 1fr;
@@ -86,49 +110,59 @@
     border-radius: 8px;
     padding: 12px 16px;
     font-size: 12px;
-    margin-bottom: 16px;
     width: 100%;
-    max-width: 720px;
+    max-width: 768px;
     word-break: break-all;
   }
   #meta:empty { display: none; }
   #meta .k { color: var(--muted); }
   #meta .v.accent { color: var(--accent); }
-  canvas {
-    width: 100%;
-    max-width: 768px;
-    image-rendering: pixelated;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: #000;
-  }
 </style>
 </head>
 <body>
 
 <h1>BSV <span>Block Automata</span></h1>
-<p class="sub">Every block renders one deterministic elementary cellular automaton.<br>
-Seed row = block hash bits · rule = nonce mod 256 · color = merkle root</p>
+<p class="sub">Each block defines a 3D cellular automaton: self + 6 face neighbors + own previous state = 8 inputs,<br>
+so the 256-entry rule table is exactly the block hash. A cell flips when its table entry is 1.<br>
+The merkle root seeds the initial matter.</p>
 
 <form id="form">
   <input type="text" id="blockInput" placeholder="Block height or hash (blank = latest)" spellcheck="false">
-  <button type="submit" class="primary">Render</button>
+  <button type="submit" class="primary">Load</button>
   <button type="button" id="latestBtn">Latest block</button>
 </form>
 
+<div class="controls">
+  <button type="button" id="playBtn">Pause</button>
+  <button type="button" id="stepBtn">Step</button>
+  <button type="button" id="resetBtn">Reset</button>
+  <label>Speed <input type="range" id="speed" min="1" max="20" value="6"></label>
+</div>
+
 <div id="status">Loading latest block…</div>
+<div id="viewer"></div>
 <div id="meta"></div>
-<canvas id="ca" width="256" height="384"></canvas>
 
-<script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.178.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.178.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
 const API = 'https://bananablocks.com/api/v1';
-const WIDTH = 256;   // cells per row (256 bits of the block hash)
-const ROWS = 384;    // generations
+const N = 32;              // grid is N×N×N, wrapping at the edges
+const CELLS = N * N * N;
 
-const canvas = document.getElementById('ca');
-const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
 const metaEl = document.getElementById('meta');
+const playBtn = document.getElementById('playBtn');
+const speedEl = document.getElementById('speed');
 
 function setStatus(msg, isError) {
   statusEl.textContent = msg;
@@ -144,56 +178,214 @@ function hexToBits(hex, count) {
   return bits;
 }
 
-// All parameters below derive only from block fields, so the same
-// block always produces the same image.
-function deriveParams(block) {
-  const rule = block.nonce % 256;
-  const hue = parseInt(block.merkle_root.slice(0, 4), 16) % 360;
-  return { rule, hue, seed: hexToBits(block.hash, WIDTH) };
+function bitrev8(i) {
+  let r = 0;
+  for (let b = 0; b < 8; b++) r |= ((i >> b) & 1) << (7 - b);
+  return r;
 }
 
-function render(block) {
-  const { rule, hue, seed } = deriveParams(block);
-
-  const img = ctx.createImageData(WIDTH, ROWS);
-  const fg = hslToRgb(hue / 360, 0.75, 0.62);
-  let row = seed;
-
-  for (let y = 0; y < ROWS; y++) {
-    for (let x = 0; x < WIDTH; x++) {
-      const p = (y * WIDTH + x) * 4;
-      if (row[x]) {
-        img.data[p] = fg[0];
-        img.data[p + 1] = fg[1];
-        img.data[p + 2] = fg[2];
-      } else {
-        img.data[p] = img.data[p + 1] = img.data[p + 2] = 10;
-      }
-      img.data[p + 3] = 255;
-    }
-    const next = new Uint8Array(WIDTH);
-    for (let x = 0; x < WIDTH; x++) {
-      const l = row[(x + WIDTH - 1) % WIDTH];
-      const c = row[x];
-      const r = row[(x + 1) % WIDTH];
-      next[x] = (rule >> ((l << 2) | (c << 1) | r)) & 1;
-    }
-    row = next;
-  }
-  ctx.putImageData(img, 0, 0);
-  return { rule, hue };
-}
-
-function hslToRgb(h, s, l) {
-  const f = n => {
-    const k = (n + h * 12) % 12;
-    const a = s * Math.min(l, 1 - l);
-    return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
+// Deterministic PRNG keyed by a hex string, used to expand the merkle root
+// into a full-grid seed pattern.
+function prng(hex) {
+  let s = 0;
+  for (let i = 0; i < hex.length; i += 8) s = (s ^ parseInt(hex.slice(i, i + 8), 16)) >>> 0;
+  return () => {
+    s = (s + 0x9e3779b9) >>> 0;
+    let t = s;
+    t ^= t >>> 16; t = Math.imul(t, 0x21f0aaad);
+    t ^= t >>> 15; t = Math.imul(t, 0x735a2d97);
+    t ^= t >>> 15;
+    return (t >>> 0) / 4294967296;
   };
-  return [f(0), f(8), f(4)];
 }
 
-function showMeta(block, rule, hue) {
+// 3D CA with one bit of memory. Each cell reads 8 bits — itself, its six
+// face neighbors, and its own state one generation ago — so the rule table
+// has 2^8 = 256 entries and the block hash fills it exactly. A cell FLIPS
+// when its table entry is 1 (next = cur XOR table[idx]) rather than being
+// set to it: flip semantics keep the dynamics alive instead of decaying to
+// a still life. The table is filled through a bit-reversed index so the
+// hash's proof-of-work leading zeros spread evenly across neighborhood
+// densities; bitrev(0) = 0 keeps table[0] = 0, so empty space never flips
+// on its own and the vacuum is stable.
+class BlockCA {
+  constructor(block) {
+    const bits = hexToBits(block.hash, 256);
+    this.table = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) this.table[bitrev8(i)] = bits[i];
+    this.merkle = block.merkle_root;
+    this.cur = new Uint8Array(CELLS);
+    this.prev = new Uint8Array(CELLS);
+    this.next = new Uint8Array(CELLS);
+    this.age = new Uint16Array(CELLS);
+    this.reset();
+  }
+
+  reset() {
+    this.prev.fill(0);
+    this.age.fill(0);
+    this.generation = 0;
+    this.settledSteps = 0;
+    // Merkle root keys the PRNG that lays down the initial matter: 25% fill.
+    const rnd = prng(this.merkle);
+    for (let i = 0; i < CELLS; i++) this.cur[i] = rnd() < 0.25 ? 1 : 0;
+  }
+
+  step() {
+    const { cur, prev, next, table } = this;
+    const N2 = N * N;
+    let changed = 0;
+    for (let z = 0; z < N; z++) {
+      const z0 = z * N2, zm = ((z + N - 1) % N) * N2, zp = ((z + 1) % N) * N2;
+      for (let y = 0; y < N; y++) {
+        const y0 = y * N, ym = ((y + N - 1) % N) * N, yp = ((y + 1) % N) * N;
+        for (let x = 0; x < N; x++) {
+          const xm = (x + N - 1) % N, xp = (x + 1) % N;
+          const i = z0 + y0 + x;
+          const idx = (cur[i] << 7)
+            | (cur[z0 + y0 + xm] << 6) | (cur[z0 + y0 + xp] << 5)
+            | (cur[z0 + ym + x] << 4) | (cur[z0 + yp + x] << 3)
+            | (cur[zm + y0 + x] << 2) | (cur[zp + y0 + x] << 1)
+            | prev[i];
+          next[i] = cur[i] ^ table[idx];
+          changed |= next[i] ^ cur[i];
+        }
+      }
+    }
+    const age = this.age;
+    for (let i = 0; i < CELLS; i++) {
+      age[i] = next[i] ? (cur[i] ? Math.min(age[i] + 1, 60) : 1) : 0;
+    }
+    const tmp = this.prev;
+    this.prev = this.cur;
+    this.cur = this.next;
+    this.next = tmp;
+    this.generation++;
+    this.settledSteps = changed ? 0 : this.settledSteps + 1;
+  }
+
+  liveCount() {
+    let n = 0;
+    for (let i = 0; i < CELLS; i++) n += this.cur[i];
+    return n;
+  }
+}
+
+// --- three.js scene ---
+const viewer = document.getElementById('viewer');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+viewer.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#0e1013');
+
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+camera.position.set(N * 1.5, N * 1.1, N * 1.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+sun.position.set(1, 2, 1.5);
+scene.add(sun);
+
+const bounds = new THREE.Box3(
+  new THREE.Vector3(-N / 2, -N / 2, -N / 2),
+  new THREE.Vector3(N / 2, N / 2, N / 2)
+);
+scene.add(new THREE.Box3Helper(bounds, new THREE.Color('#2a2f37')));
+
+const mesh = new THREE.InstancedMesh(
+  new THREE.BoxGeometry(0.85, 0.85, 0.85),
+  new THREE.MeshLambertMaterial(),
+  CELLS
+);
+mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(mesh);
+
+function resize() {
+  const w = viewer.clientWidth, h = viewer.clientHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+resize();
+
+// --- app state ---
+let ca = null;
+let hue = 0;
+let playing = true;
+let sinceStep = 0;
+const dummy = new THREE.Object3D();
+const color = new THREE.Color();
+
+function syncMesh() {
+  let count = 0;
+  const half = (N - 1) / 2;
+  for (let z = 0; z < N; z++) {
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const i = z * N * N + y * N + x;
+        if (!ca.cur[i]) continue;
+        dummy.position.set(x - half, y - half, z - half);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(count, dummy.matrix);
+        // newborn cells glow bright, long-lived cells fade toward dim
+        color.setHSL(hue / 360, 0.7, 0.28 + 0.42 * Math.exp(-(ca.age[i] - 1) / 12));
+        mesh.setColorAt(count, color);
+        count++;
+      }
+    }
+  }
+  mesh.count = count;
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  return count;
+}
+
+function updateStatus(live) {
+  if (live === 0) {
+    playing = false;
+    playBtn.textContent = 'Play';
+    setStatus(`Died out at generation ${ca.generation}.`);
+  } else if (ca.settledSteps >= 2) {
+    playing = false;
+    playBtn.textContent = 'Play';
+    setStatus(`Froze at generation ${ca.generation} · ${live.toLocaleString()} cells.`);
+  } else {
+    setStatus(`Generation ${ca.generation} · ${live.toLocaleString()} live cells`);
+  }
+}
+
+function tick() {
+  ca.step();
+  updateStatus(syncMesh());
+}
+
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  if (ca && playing) {
+    sinceStep += dt;
+    const interval = 1 / speedEl.value;
+    if (sinceStep >= interval) {
+      sinceStep = 0;
+      tick();
+    }
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// --- block loading & UI ---
+function showMeta(block) {
   const rows = [
     ['Height', block.height],
     ['Hash', block.hash],
@@ -201,8 +393,9 @@ function showMeta(block, rule, hue) {
     ['Time', new Date(block.time * 1000).toLocaleString()],
     ['Transactions', block.tx_count.toLocaleString()],
     ['Nonce', block.nonce],
-    ['CA rule', `Rule ${rule} (nonce mod 256)`],
-    ['Hue', `${hue}° (merkle root)`],
+    ['Rule table', '256 bits = block hash (bit-reversed index, flip semantics)'],
+    ['Seed', 'merkle-root-keyed noise, 25% fill'],
+    ['Hue', `${hue}° (nonce mod 360)`],
   ];
   metaEl.innerHTML = rows.map(([k, v], i) =>
     `<div class="k">${k}</div><div class="v${i >= 6 ? ' accent' : ''}">${v}</div>`
@@ -216,9 +409,12 @@ async function load(id) {
     if (!res.ok) throw new Error(`API responded ${res.status}`);
     const block = await res.json();
     if (!block.hash) throw new Error('Block not found');
-    const { rule, hue } = render(block);
-    showMeta(block, rule, hue);
-    setStatus(`Block ${block.height} · deterministic — reload it and you'll get the same image.`);
+    hue = block.nonce % 360;
+    ca = new BlockCA(block);
+    showMeta(block);
+    playing = true;
+    playBtn.textContent = 'Pause';
+    updateStatus(syncMesh());
   } catch (err) {
     setStatus(`Error: ${err.message}`, true);
   }
@@ -231,6 +427,24 @@ document.getElementById('form').addEventListener('submit', e => {
 document.getElementById('latestBtn').addEventListener('click', () => {
   document.getElementById('blockInput').value = '';
   load();
+});
+playBtn.addEventListener('click', () => {
+  if (!ca) return;
+  playing = !playing;
+  playBtn.textContent = playing ? 'Pause' : 'Play';
+});
+document.getElementById('stepBtn').addEventListener('click', () => {
+  if (!ca) return;
+  playing = false;
+  playBtn.textContent = 'Play';
+  tick();
+});
+document.getElementById('resetBtn').addEventListener('click', () => {
+  if (!ca) return;
+  ca.reset();
+  playing = true;
+  playBtn.textContent = 'Pause';
+  updateStatus(syncMesh());
 });
 
 load();
