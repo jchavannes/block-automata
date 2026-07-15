@@ -132,6 +132,11 @@ The merkle root seeds the initial matter.</p>
   <button type="button" id="latestBtn">Latest block</button>
 </form>
 
+<div id="nav">
+  <button type="button" id="prevBtn">◀ Prev block</button>
+  <button type="button" id="nextBtn">Next block ▶</button>
+</div>
+
 <div class="controls">
   <button type="button" id="playBtn">Pause</button>
   <button type="button" id="stepBtn">Step</button>
@@ -163,6 +168,8 @@ const statusEl = document.getElementById('status');
 const metaEl = document.getElementById('meta');
 const playBtn = document.getElementById('playBtn');
 const speedEl = document.getElementById('speed');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
 
 function setStatus(msg, isError) {
   statusEl.textContent = msg;
@@ -321,6 +328,12 @@ let ca = null;
 let hue = 0;
 let playing = true;
 let sinceStep = 0;
+let currentHeight = null;
+
+function updateNavButtons() {
+  prevBtn.disabled = currentHeight === null || currentHeight <= 0;
+  nextBtn.disabled = currentHeight === null;
+}
 const dummy = new THREE.Object3D();
 const color = new THREE.Color();
 
@@ -411,6 +424,8 @@ async function load(id) {
     if (!block.hash) throw new Error('Block not found');
     hue = block.nonce % 360;
     ca = new BlockCA(block);
+    currentHeight = block.height;
+    document.getElementById('blockInput').value = block.height;
     showMeta(block);
     playing = true;
     playBtn.textContent = 'Pause';
@@ -418,6 +433,7 @@ async function load(id) {
   } catch (err) {
     setStatus(`Error: ${err.message}`, true);
   }
+  updateNavButtons();
 }
 
 document.getElementById('form').addEventListener('submit', e => {
@@ -427,6 +443,14 @@ document.getElementById('form').addEventListener('submit', e => {
 document.getElementById('latestBtn').addEventListener('click', () => {
   document.getElementById('blockInput').value = '';
   load();
+});
+prevBtn.addEventListener('click', () => {
+  if (currentHeight === null || currentHeight <= 0) return;
+  load(currentHeight - 1);
+});
+nextBtn.addEventListener('click', () => {
+  if (currentHeight === null) return;
+  load(currentHeight + 1);
 });
 playBtn.addEventListener('click', () => {
   if (!ca) return;
