@@ -122,9 +122,9 @@
 <body>
 
 <h1>BSV <span>Block Automata</span></h1>
-<p class="sub">Each block defines a 3D cellular automaton: self + 6 face neighbors + own previous state = 8 inputs,<br>
-so the 256-entry rule table is exactly the block hash. A cell flips when its table entry is 1.<br>
-The merkle root seeds the initial matter.</p>
+<p class="sub">Each block defines a 3D cellular automaton. The hash fills the 256-entry rule table<br>
+(a cell flips when its entry is 1) and picks which 6 of the 26 surrounding cells each cell reads;<br>
+the merkle root lays down the initial matter — blobs, worms, plates, or a sparse field.</p>
 
 <form id="form">
   <input type="text" id="blockInput" placeholder="Block height or hash (blank = latest)" spellcheck="false">
@@ -206,21 +206,159 @@ function prng(hex) {
   };
 }
 
-// 3D CA with one bit of memory. Each cell reads 8 bits — itself, its six
-// face neighbors, and its own state one generation ago — so the rule table
-// has 2^8 = 256 entries and the block hash fills it exactly. A cell FLIPS
-// when its table entry is 1 (next = cur XOR table[idx]) rather than being
-// set to it: flip semantics keep the dynamics alive instead of decaying to
-// a still life. The table is filled through a bit-reversed index so the
-// hash's proof-of-work leading zeros spread evenly across neighborhood
-// densities; bitrev(0) = 0 keeps table[0] = 0, so empty space never flips
-// on its own and the vacuum is stable.
+const MOORE = [];
+for (let dz = -1; dz <= 1; dz++)
+  for (let dy = -1; dy <= 1; dy++)
+    for (let dx = -1; dx <= 1; dx++)
+      if (dx || dy || dz) MOORE.push([dx, dy, dz]);
+const FACES = [[-1,0,0],[1,0,0],[0,-1,0],[0,1,0],[0,0,-1],[0,0,1]];
+
+function wrap(v) { return (v + N) % N; }
+function cellAt(x, y, z) { return wrap(z) * N * N + wrap(y) * N + wrap(x); }
+
+// The rule table is exactly the 256 hash bits, filled through a bit-reversed
+// index so the proof-of-work leading zeros spread evenly across neighborhood
+// densities; bitrev(0) = 0 keeps table[0] = 0, so empty space never flips on
+// its own and the vacuum is stable.
+function buildTable(hash) {
+  const bits = hexToBits(hash, 256);
+  const table = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) table[bitrev8(i)] = bits[i];
+  return table;
+}
+
+// The merkle root picks one of four matter layouts and its parameters, giving
+// each block visible macro structure instead of uniform noise.
+function seedGrid(cur, merkle) {
+  cur.fill(0);
+  const rnd = prng(merkle);
+  const type = Math.floor(rnd() * 4);
+  if (type === 0) {
+    const k = 3 + Math.floor(rnd() * 6);
+    for (let b = 0; b < k; b++) {
+      const cx = rnd() * N, cy = rnd() * N, cz = rnd() * N, r = 3 + rnd() * 5;
+      for (let z = 0; z < N; z++) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+        const dx = Math.min(Math.abs(x - cx), N - Math.abs(x - cx));
+        const dy = Math.min(Math.abs(y - cy), N - Math.abs(y - cy));
+        const dz = Math.min(Math.abs(z - cz), N - Math.abs(z - cz));
+        if (dx * dx + dy * dy + dz * dz < r * r && rnd() < 0.6) cur[cellAt(x, y, z)] = 1;
+      }
+    }
+    return `${k} blobs`;
+  }
+  if (type === 1) {
+    const w = 4 + Math.floor(rnd() * 5);
+    for (let j = 0; j < w; j++) {
+      let x = Math.floor(rnd() * N), y = Math.floor(rnd() * N), z = Math.floor(rnd() * N);
+      const thick = rnd() < 0.5;
+      for (let s = 0; s < 200; s++) {
+        cur[cellAt(x, y, z)] = 1;
+        if (thick) { cur[cellAt(x + 1, y, z)] = 1; cur[cellAt(x, y + 1, z)] = 1; cur[cellAt(x, y, z + 1)] = 1; }
+        const [dx, dy, dz] = FACES[Math.floor(rnd() * 6)];
+        x = wrap(x + dx); y = wrap(y + dy); z = wrap(z + dz);
+      }
+    }
+    return `${w} worms`;
+  }
+  if (type === 2) {
+    const p = 2 + Math.floor(rnd() * 2);
+    for (let j = 0; j < p; j++) {
+      const axis = Math.floor(rnd() * 3);
+      const pos = Math.floor(rnd() * N), th = 2 + Math.floor(rnd() * 2);
+      for (let a = 0; a < N; a++) for (let b = 0; b < N; b++) for (let t = 0; t < th; t++) {
+        if (rnd() >= 0.55) continue;
+        const c = wrap(pos + t);
+        if (axis === 0) cur[cellAt(c, a, b)] = 1;
+        else if (axis === 1) cur[cellAt(a, c, b)] = 1;
+        else cur[cellAt(a, b, c)] = 1;
+      }
+    }
+    return `${p} plates`;
+  }
+  for (let i = 0; i < CELLS; i++) cur[i] = rnd() < 0.10 ? 1 : 0;
+  const cx = rnd() * N, cy = rnd() * N, cz = rnd() * N, r = 5 + rnd() * 3;
+  for (let z = 0; z < N; z++) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const dx = Math.min(Math.abs(x - cx), N - Math.abs(x - cx));
+    const dy = Math.min(Math.abs(y - cy), N - Math.abs(y - cy));
+    const dz = Math.min(Math.abs(z - cz), N - Math.abs(z - cz));
+    if (dx * dx + dy * dy + dz * dz < r * r && rnd() < 0.7) cur[cellAt(x, y, z)] = 1;
+  }
+  return 'sparse field + blob';
+}
+
+// Precomputed wrapped neighbor indexes for each of the 6 chosen offsets.
+function neighborIndexes(nbr) {
+  return nbr.map(([ox, oy, oz]) => {
+    const a = new Int32Array(CELLS);
+    for (let z = 0; z < N; z++) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      a[z * N * N + y * N + x] = cellAt(x + ox, y + oy, z + oz);
+    }
+    return a;
+  });
+}
+
+// One generation. Each cell reads 8 bits — itself, its 6 chosen neighbors,
+// and its own state one generation ago — and FLIPS when the hash's table
+// entry for that pattern is 1 (next = cur XOR table[idx]). Flip semantics
+// keep the dynamics alive instead of decaying to a still life.
+function stepKernel(cur, prev, next, table, nIdx) {
+  const [n0, n1, n2, n3, n4, n5] = nIdx;
+  let changed = 0;
+  for (let i = 0; i < CELLS; i++) {
+    const idx = (cur[i] << 7)
+      | (cur[n0[i]] << 6) | (cur[n1[i]] << 5)
+      | (cur[n2[i]] << 4) | (cur[n3[i]] << 3)
+      | (cur[n4[i]] << 2) | (cur[n5[i]] << 1)
+      | prev[i];
+    next[i] = cur[i] ^ table[idx];
+    changed += next[i] ^ cur[i];
+  }
+  return changed;
+}
+
+function trial(table, nIdx, seed, gens = 150) {
+  let cur = seed.slice(), prev = new Uint8Array(CELLS), next = new Uint8Array(CELLS);
+  let actSum = 0;
+  for (let g = 0; g < gens; g++) {
+    const changed = stepKernel(cur, prev, next, table, nIdx);
+    [prev, cur, next] = [cur, next, prev];
+    if (g >= gens - 30) actSum += changed;
+  }
+  return { act: actSum / 30 / CELLS, live: cur.reduce((a, b) => a + b, 0) / CELLS };
+}
+
+// The hash also picks the neighborhood geometry: 6 of the 26 surrounding
+// cells, drawn in a fixed hash-derived order. Each candidate is simulated
+// briefly and the first that stays lively is kept. The trial itself is
+// deterministic, so every viewer gets the same geometry for a given block —
+// it just skips the hashes whose raw geometry would die out or freeze.
+async function chooseGeometry(hash, table, seed, onProgress) {
+  const rnd = prng(hash);
+  let best = null;
+  for (let cand = 0; cand < 8; cand++) {
+    onProgress?.(cand + 1);
+    await new Promise(r => setTimeout(r));
+    const picked = new Set();
+    while (picked.size < 6) picked.add(Math.floor(rnd() * 26));
+    const nbr = [...picked].map(i => MOORE[i]);
+    const nIdx = neighborIndexes(nbr);
+    const { act, live } = trial(table, nIdx, seed);
+    if (act >= 0.003 && live >= 0.01) return { nbr, nIdx, cand, accepted: true };
+    if (!best || act > best.act) best = { nbr, nIdx, cand, accepted: false, act };
+  }
+  const fIdx = neighborIndexes(FACES);
+  if (trial(table, fIdx, seed).act > best.act) {
+    return { nbr: FACES, nIdx: fIdx, cand: -1, accepted: false };
+  }
+  return best;
+}
+
 class BlockCA {
-  constructor(block) {
-    const bits = hexToBits(block.hash, 256);
-    this.table = new Uint8Array(256);
-    for (let i = 0; i < 256; i++) this.table[bitrev8(i)] = bits[i];
-    this.merkle = block.merkle_root;
+  constructor(table, geometry, seed, seedStyle) {
+    this.table = table;
+    this.geometry = geometry;
+    this.seed = seed;
+    this.seedStyle = seedStyle;
     this.cur = new Uint8Array(CELLS);
     this.prev = new Uint8Array(CELLS);
     this.next = new Uint8Array(CELLS);
@@ -229,37 +367,16 @@ class BlockCA {
   }
 
   reset() {
+    this.cur.set(this.seed);
     this.prev.fill(0);
     this.age.fill(0);
     this.generation = 0;
     this.settledSteps = 0;
-    // Merkle root keys the PRNG that lays down the initial matter: 25% fill.
-    const rnd = prng(this.merkle);
-    for (let i = 0; i < CELLS; i++) this.cur[i] = rnd() < 0.25 ? 1 : 0;
   }
 
   step() {
-    const { cur, prev, next, table } = this;
-    const N2 = N * N;
-    let changed = 0;
-    for (let z = 0; z < N; z++) {
-      const z0 = z * N2, zm = ((z + N - 1) % N) * N2, zp = ((z + 1) % N) * N2;
-      for (let y = 0; y < N; y++) {
-        const y0 = y * N, ym = ((y + N - 1) % N) * N, yp = ((y + 1) % N) * N;
-        for (let x = 0; x < N; x++) {
-          const xm = (x + N - 1) % N, xp = (x + 1) % N;
-          const i = z0 + y0 + x;
-          const idx = (cur[i] << 7)
-            | (cur[z0 + y0 + xm] << 6) | (cur[z0 + y0 + xp] << 5)
-            | (cur[z0 + ym + x] << 4) | (cur[z0 + yp + x] << 3)
-            | (cur[zm + y0 + x] << 2) | (cur[zp + y0 + x] << 1)
-            | prev[i];
-          next[i] = cur[i] ^ table[idx];
-          changed |= next[i] ^ cur[i];
-        }
-      }
-    }
-    const age = this.age;
+    const changed = stepKernel(this.cur, this.prev, this.next, this.table, this.geometry.nIdx);
+    const { cur, next, age } = this;
     for (let i = 0; i < CELLS; i++) {
       age[i] = next[i] ? (cur[i] ? Math.min(age[i] + 1, 60) : 1) : 0;
     }
@@ -276,6 +393,14 @@ class BlockCA {
     for (let i = 0; i < CELLS; i++) n += this.cur[i];
     return n;
   }
+}
+
+async function createBlockCA(block, onProgress) {
+  const table = buildTable(block.hash);
+  const seed = new Uint8Array(CELLS);
+  const seedStyle = seedGrid(seed, block.merkle_root);
+  const geometry = await chooseGeometry(block.hash, table, seed, onProgress);
+  return new BlockCA(table, geometry, seed, seedStyle);
 }
 
 // --- three.js scene ---
@@ -407,7 +532,11 @@ function showMeta(block) {
     ['Transactions', block.tx_count.toLocaleString()],
     ['Nonce', block.nonce],
     ['Rule table', '256 bits = block hash (bit-reversed index, flip semantics)'],
-    ['Seed', 'merkle-root-keyed noise, 25% fill'],
+    ['Neighborhood', ca.geometry.cand === -1
+      ? 'face neighbors (fallback)'
+      : `hash pick #${ca.geometry.cand + 1}${ca.geometry.accepted ? '' : ' (best-effort)'} · `
+        + ca.geometry.nbr.map(o => `(${o.join(',')})`).join(' ')],
+    ['Seed', `${ca.seedStyle} (merkle-root-keyed)`],
     ['Hue', `${hue}° (nonce mod 360)`],
   ];
   metaEl.innerHTML = rows.map(([k, v], i) =>
@@ -415,15 +544,21 @@ function showMeta(block) {
   ).join('');
 }
 
+let loadSeq = 0;
 async function load(id) {
+  const seq = ++loadSeq;
   setStatus(id ? `Fetching block ${id}…` : 'Fetching latest block…');
   try {
     const res = await fetch(`${API}/block/${id || 'tip'}`);
     if (!res.ok) throw new Error(`API responded ${res.status}`);
     const block = await res.json();
     if (!block.hash) throw new Error('Block not found');
+    if (seq !== loadSeq) return;
+    const newCa = await createBlockCA(block, c =>
+      setStatus(`Block ${block.height}: simulating geometry candidate ${c}/8…`));
+    if (seq !== loadSeq) return;
     hue = block.nonce % 360;
-    ca = new BlockCA(block);
+    ca = newCa;
     currentHeight = block.height;
     document.getElementById('blockInput').value = block.height;
     showMeta(block);
