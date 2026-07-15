@@ -124,7 +124,7 @@
 <h1>BSV <span>Block Automata</span></h1>
 <p class="sub">Each block defines a 3D cellular automaton. The hash fills the 256-entry rule table<br>
 (a cell flips when its entry is 1) and picks which 6 of the 26 surrounding cells each cell reads;<br>
-the merkle root lays down the initial matter — blobs, worms, plates, or a sparse field.</p>
+the merkle root lays down the initial matter as blobs.</p>
 
 <form id="form">
   <input type="text" id="blockInput" placeholder="Block height or hash (blank = latest)" spellcheck="false">
@@ -227,63 +227,22 @@ function buildTable(hash) {
   return table;
 }
 
-// The merkle root picks one of four matter layouts and its parameters, giving
-// each block visible macro structure instead of uniform noise.
+// The merkle root lays down the initial matter as blobs: it picks how many,
+// where they sit, and how big each one is.
 function seedGrid(cur, merkle) {
   cur.fill(0);
   const rnd = prng(merkle);
-  const type = Math.floor(rnd() * 4);
-  if (type === 0) {
-    const k = 3 + Math.floor(rnd() * 6);
-    for (let b = 0; b < k; b++) {
-      const cx = rnd() * N, cy = rnd() * N, cz = rnd() * N, r = 3 + rnd() * 5;
-      for (let z = 0; z < N; z++) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-        const dx = Math.min(Math.abs(x - cx), N - Math.abs(x - cx));
-        const dy = Math.min(Math.abs(y - cy), N - Math.abs(y - cy));
-        const dz = Math.min(Math.abs(z - cz), N - Math.abs(z - cz));
-        if (dx * dx + dy * dy + dz * dz < r * r && rnd() < 0.6) cur[cellAt(x, y, z)] = 1;
-      }
+  const k = 3 + Math.floor(rnd() * 6);
+  for (let b = 0; b < k; b++) {
+    const cx = rnd() * N, cy = rnd() * N, cz = rnd() * N, r = 3 + rnd() * 5;
+    for (let z = 0; z < N; z++) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const dx = Math.min(Math.abs(x - cx), N - Math.abs(x - cx));
+      const dy = Math.min(Math.abs(y - cy), N - Math.abs(y - cy));
+      const dz = Math.min(Math.abs(z - cz), N - Math.abs(z - cz));
+      if (dx * dx + dy * dy + dz * dz < r * r && rnd() < 0.6) cur[cellAt(x, y, z)] = 1;
     }
-    return `${k} blobs`;
   }
-  if (type === 1) {
-    const w = 4 + Math.floor(rnd() * 5);
-    for (let j = 0; j < w; j++) {
-      let x = Math.floor(rnd() * N), y = Math.floor(rnd() * N), z = Math.floor(rnd() * N);
-      const thick = rnd() < 0.5;
-      for (let s = 0; s < 200; s++) {
-        cur[cellAt(x, y, z)] = 1;
-        if (thick) { cur[cellAt(x + 1, y, z)] = 1; cur[cellAt(x, y + 1, z)] = 1; cur[cellAt(x, y, z + 1)] = 1; }
-        const [dx, dy, dz] = FACES[Math.floor(rnd() * 6)];
-        x = wrap(x + dx); y = wrap(y + dy); z = wrap(z + dz);
-      }
-    }
-    return `${w} worms`;
-  }
-  if (type === 2) {
-    const p = 2 + Math.floor(rnd() * 2);
-    for (let j = 0; j < p; j++) {
-      const axis = Math.floor(rnd() * 3);
-      const pos = Math.floor(rnd() * N), th = 2 + Math.floor(rnd() * 2);
-      for (let a = 0; a < N; a++) for (let b = 0; b < N; b++) for (let t = 0; t < th; t++) {
-        if (rnd() >= 0.55) continue;
-        const c = wrap(pos + t);
-        if (axis === 0) cur[cellAt(c, a, b)] = 1;
-        else if (axis === 1) cur[cellAt(a, c, b)] = 1;
-        else cur[cellAt(a, b, c)] = 1;
-      }
-    }
-    return `${p} plates`;
-  }
-  for (let i = 0; i < CELLS; i++) cur[i] = rnd() < 0.10 ? 1 : 0;
-  const cx = rnd() * N, cy = rnd() * N, cz = rnd() * N, r = 5 + rnd() * 3;
-  for (let z = 0; z < N; z++) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-    const dx = Math.min(Math.abs(x - cx), N - Math.abs(x - cx));
-    const dy = Math.min(Math.abs(y - cy), N - Math.abs(y - cy));
-    const dz = Math.min(Math.abs(z - cz), N - Math.abs(z - cz));
-    if (dx * dx + dy * dy + dz * dz < r * r && rnd() < 0.7) cur[cellAt(x, y, z)] = 1;
-  }
-  return 'sparse field + blob';
+  return `${k} blobs`;
 }
 
 // Precomputed wrapped neighbor indexes for each of the 6 chosen offsets.
