@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BSV Block Automata</title>
+<style>
+  :root {
+    --bg: #0e1013;
+    --panel: #171a1f;
+    --border: #2a2f37;
+    --text: #e6e8eb;
+    --muted: #8b929c;
+    --accent: #f5c542;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 48px;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    margin: 0 0 4px;
+  }
+  h1 span { color: var(--accent); }
+  p.sub {
+    color: var(--muted);
+    font-size: 12px;
+    margin: 0 0 20px;
+    text-align: center;
+  }
+  form {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-bottom: 16px;
+    width: 100%;
+    max-width: 720px;
+  }
+  input[type="text"] {
+    flex: 1;
+    min-width: 220px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    padding: 8px 12px;
+  }
+  input[type="text"]:focus { outline: 1px solid var(--accent); }
+  button {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    padding: 8px 16px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #1a1500; font-weight: 600; }
+  #status {
+    min-height: 18px;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+  #status.error { color: #f07070; }
+  #meta {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 16px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 12px;
+    margin-bottom: 16px;
+    width: 100%;
+    max-width: 720px;
+    word-break: break-all;
+  }
+  #meta:empty { display: none; }
+  #meta .k { color: var(--muted); }
+  #meta .v.accent { color: var(--accent); }
+  canvas {
+    width: 100%;
+    max-width: 768px;
+    image-rendering: pixelated;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #000;
+  }
+</style>
+</head>
+<body>
+
+<h1>BSV <span>Block Automata</span></h1>
+<p class="sub">Every block renders one deterministic elementary cellular automaton.<br>
+Seed row = block hash bits · rule = nonce mod 256 · color = merkle root</p>
+
+<form id="form">
+  <input type="text" id="blockInput" placeholder="Block height or hash (blank = latest)" spellcheck="false">
+  <button type="submit" class="primary">Render</button>
+  <button type="button" id="latestBtn">Latest block</button>
+</form>
+
+<div id="status">Loading latest block…</div>
+<div id="meta"></div>
+<canvas id="ca" width="256" height="384"></canvas>
+
+<script>
+const API = 'https://bananablocks.com/api/v1';
+const WIDTH = 256;   // cells per row (256 bits of the block hash)
+const ROWS = 384;    // generations
+
+const canvas = document.getElementById('ca');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const metaEl = document.getElementById('meta');
+
+function setStatus(msg, isError) {
+  statusEl.textContent = msg;
+  statusEl.className = isError ? 'error' : '';
+}
+
+function hexToBits(hex, count) {
+  const bits = new Uint8Array(count);
+  for (let i = 0; i < count; i++) {
+    const nibble = parseInt(hex[i >> 2], 16);
+    bits[i] = (nibble >> (3 - (i & 3))) & 1;
+  }
+  return bits;
+}
+
+// All parameters below derive only from block fields, so the same
+// block always produces the same image.
+function deriveParams(block) {
+  const rule = block.nonce % 256;
+  const hue = parseInt(block.merkle_root.slice(0, 4), 16) % 360;
+  return { rule, hue, seed: hexToBits(block.hash, WIDTH) };
+}
+
+function render(block) {
+  const { rule, hue, seed } = deriveParams(block);
+
+  const img = ctx.createImageData(WIDTH, ROWS);
+  const fg = hslToRgb(hue / 360, 0.75, 0.62);
+  let row = seed;
+
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < WIDTH; x++) {
+      const p = (y * WIDTH + x) * 4;
+      if (row[x]) {
+        img.data[p] = fg[0];
+        img.data[p + 1] = fg[1];
+        img.data[p + 2] = fg[2];
+      } else {
+        img.data[p] = img.data[p + 1] = img.data[p + 2] = 10;
+      }
+      img.data[p + 3] = 255;
+    }
+    const next = new Uint8Array(WIDTH);
+    for (let x = 0; x < WIDTH; x++) {
+      const l = row[(x + WIDTH - 1) % WIDTH];
+      const c = row[x];
+      const r = row[(x + 1) % WIDTH];
+      next[x] = (rule >> ((l << 2) | (c << 1) | r)) & 1;
+    }
+    row = next;
+  }
+  ctx.putImageData(img, 0, 0);
+  return { rule, hue };
+}
+
+function hslToRgb(h, s, l) {
+  const f = n => {
+    const k = (n + h * 12) % 12;
+    const a = s * Math.min(l, 1 - l);
+    return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
+  };
+  return [f(0), f(8), f(4)];
+}
+
+function showMeta(block, rule, hue) {
+  const rows = [
+    ['Height', block.height],
+    ['Hash', block.hash],
+    ['Merkle root', block.merkle_root],
+    ['Time', new Date(block.time * 1000).toLocaleString()],
+    ['Transactions', block.tx_count.toLocaleString()],
+    ['Nonce', block.nonce],
+    ['CA rule', `Rule ${rule} (nonce mod 256)`],
+    ['Hue', `${hue}° (merkle root)`],
+  ];
+  metaEl.innerHTML = rows.map(([k, v], i) =>
+    `<div class="k">${k}</div><div class="v${i >= 6 ? ' accent' : ''}">${v}</div>`
+  ).join('');
+}
+
+async function load(id) {
+  setStatus(id ? `Fetching block ${id}…` : 'Fetching latest block…');
+  try {
+    const res = await fetch(`${API}/block/${id || 'tip'}`);
+    if (!res.ok) throw new Error(`API responded ${res.status}`);
+    const block = await res.json();
+    if (!block.hash) throw new Error('Block not found');
+    const { rule, hue } = render(block);
+    showMeta(block, rule, hue);
+    setStatus(`Block ${block.height} · deterministic — reload it and you'll get the same image.`);
+  } catch (err) {
+    setStatus(`Error: ${err.message}`, true);
+  }
+}
+
+document.getElementById('form').addEventListener('submit', e => {
+  e.preventDefault();
+  load(document.getElementById('blockInput').value.trim());
+});
+document.getElementById('latestBtn').addEventListener('click', () => {
+  document.getElementById('blockInput').value = '';
+  load();
+});
+
+load();
+</script>
+</body>
+</html>
