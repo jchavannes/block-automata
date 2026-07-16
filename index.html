@@ -503,8 +503,18 @@ function showMeta(block) {
   ).join('');
 }
 
+// Keep the URL fragment in sync so any block can be linked directly
+// (e.g. index.html#958000 or #<block hash>). The fragment is canonicalized
+// to the block height once loaded.
+function setUrlHash(height, replace) {
+  const h = '#' + height;
+  if (location.hash === h) return;
+  if (replace) history.replaceState(null, '', h);
+  else location.hash = h;
+}
+
 let loadSeq = 0;
-async function load(id) {
+async function load(id, fromUrl = false) {
   const seq = ++loadSeq;
   setStatus(id ? `Fetching block ${id}…` : 'Fetching latest block…');
   try {
@@ -519,6 +529,7 @@ async function load(id) {
     hue = block.nonce % 360;
     ca = newCa;
     currentHeight = block.height;
+    setUrlHash(block.height, fromUrl);
     document.getElementById('blockInput').value = block.height;
     showMeta(block);
     playing = true;
@@ -564,8 +575,12 @@ document.getElementById('resetBtn').addEventListener('click', () => {
   playBtn.textContent = 'Pause';
   updateStatus(syncMesh());
 });
+addEventListener('hashchange', () => {
+  const id = decodeURIComponent(location.hash.slice(1));
+  if (id && String(currentHeight) !== id) load(id, true);
+});
 
-load();
+load(decodeURIComponent(location.hash.slice(1)), true);
 </script>
 </body>
 </html>
